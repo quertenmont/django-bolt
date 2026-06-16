@@ -8,7 +8,7 @@ use ahash::AHashMap;
 use std::collections::HashMap;
 
 use crate::responses;
-use crate::type_coercion::{coerce_param, CoercedValue, MAX_PARAM_LENGTH, TYPE_STRING};
+use crate::type_coercion::{coerce_param, max_param_length, CoercedValue, TYPE_STRING};
 
 /// Validate and pre-coerce path/query parameters against type hints.
 ///
@@ -27,17 +27,18 @@ pub fn validate_and_cache_typed_params(
 > {
     let mut path_coerced: Option<AHashMap<String, CoercedValue>> = None;
     let mut query_coerced: Option<AHashMap<String, CoercedValue>> = None;
+    let max_length = max_param_length();
 
     // Validate path parameters - always check length, type validation for non-strings
     if let Some(path_params) = path_params {
         for (name, value) in path_params {
             // Security: Always validate length for ALL parameters (including strings)
-            if value.len() > MAX_PARAM_LENGTH {
+            if value.len() > max_length {
                 return Err(responses::error_422_validation(&format!(
                     "Path parameter '{}': Parameter too long: {} bytes (max {} bytes)",
                     name,
                     value.len(),
-                    MAX_PARAM_LENGTH
+                    max_length
                 )));
             }
 
@@ -66,12 +67,12 @@ pub fn validate_and_cache_typed_params(
     if let Some(query_params) = query_params {
         for (name, value) in query_params {
             // Security: Always validate length for ALL parameters (including strings)
-            if value.len() > MAX_PARAM_LENGTH {
+            if value.len() > max_length {
                 return Err(responses::error_422_validation(&format!(
                     "Query parameter '{}': Parameter too long: {} bytes (max {} bytes)",
                     name,
                     value.len(),
-                    MAX_PARAM_LENGTH
+                    max_length
                 )));
             }
 
