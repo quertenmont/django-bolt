@@ -10,6 +10,7 @@ use pyo3::types::{PyAnyMethods, PyDictMethods};
 use pyo3::{IntoPyObject, Py, PyAny, Python};
 use rust_decimal::Decimal;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use uuid::Uuid;
 
 // OPTIMIZATION: Cache Python classes for type construction (avoids repeated imports)
@@ -71,9 +72,29 @@ fn get_time_class(py: Python<'_>) -> &Py<PyAny> {
     })
 }
 
-/// Maximum allowed length for parameter values (8KB default)
-/// Prevents memory exhaustion attacks from extremely long parameters
-pub const MAX_PARAM_LENGTH: usize = 8192;
+/// Default maximum allowed length for parameter values (8KB).
+/// Prevents memory exhaustion attacks from extremely long parameters.
+pub const DEFAULT_MAX_PARAM_LENGTH: usize = 8192;
+static MAX_PARAM_LENGTH_CACHE: OnceLock<usize> = OnceLock::new();
+
+#[inline]
+fn parse_max_param_length(value: Option<&str>) -> usize {
+    value
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|parsed| *parsed > 0)
+        .unwrap_or(DEFAULT_MAX_PARAM_LENGTH)
+}
+
+/// Maximum allowed length for parameter values.
+/// Can be overridden with DJANGO_BOLT_MAX_PARAM_LENGTH.
+/// Resolved once and cached for the process lifetime.
+#[inline]
+pub fn max_param_length() -> usize {
+    *MAX_PARAM_LENGTH_CACHE.get_or_init(|| {
+        let env_value = std::env::var("DJANGO_BOLT_MAX_PARAM_LENGTH").ok();
+        parse_max_param_length(env_value.as_deref())
+    })
+}
 
 /// Type hint constants (must match Python's get_type_hint_id() in compiler.py)
 pub const TYPE_INT: u8 = 1;
@@ -134,11 +155,12 @@ impl CoercedValue {
 /// * `Err(String)` - Error message describing the coercion failure
 pub fn coerce_param(value: &str, type_hint: u8) -> Result<CoercedValue, String> {
     // Security: Reject excessively long parameters to prevent memory exhaustion
-    if value.len() > MAX_PARAM_LENGTH {
+    let max_length = max_param_length();
+    if value.len() > max_length {
         return Err(format!(
             "Parameter too long: {} bytes (max {} bytes)",
             value.len(),
-            MAX_PARAM_LENGTH
+            max_length
         ));
     }
 
@@ -263,11 +285,12 @@ pub fn coerce_to_py(
     type_hint: u8,
 ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
     // Security: Validate length for ALL types (defense in depth)
-    if value.len() > MAX_PARAM_LENGTH {
+    let max_length = max_param_length();
+    if value.len() > max_length {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Parameter too long: {} bytes (max {} bytes)",
             value.len(),
-            MAX_PARAM_LENGTH
+            max_length
         )));
     }
 
@@ -544,14 +567,31 @@ mod tests {
 
     #[test]
     fn test_param_length_limit() {
+        let max_length = max_param_length();
         // Valid length should work
-        let valid = "a".repeat(MAX_PARAM_LENGTH);
+        let valid = "a".repeat(max_length);
         assert!(coerce_param(&valid, TYPE_STRING).is_ok());
 
         // Exceeding limit should fail
-        let too_long = "a".repeat(MAX_PARAM_LENGTH + 1);
+        let too_long = "a".repeat(max_length + 1);
         let result = coerce_param(&too_long, TYPE_STRING);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Parameter too long"));
+    }
+
+    #[test]
+    fn test_parse_max_param_length_defaults_for_invalid_values() {
+        assert_eq!(parse_max_param_length(None), DEFAULT_MAX_PARAM_LENGTH);
+        assert_eq!(parse_max_param_length(Some("")), DEFAULT_MAX_PARAM_LENGTH);
+        assert_eq!(parse_max_param_length(Some("0")), DEFAULT_MAX_PARAM_LENGTH);
+        assert_eq!(
+            parse_max_param_length(Some("not-a-number")),
+            DEFAULT_MAX_PARAM_LENGTH
+        );
+    }
+
+    #[test]
+    fn test_parse_max_param_length_accepts_valid_positive_value() {
+        assert_eq!(parse_max_param_length(Some("16384")), 16384);
     }
 }
