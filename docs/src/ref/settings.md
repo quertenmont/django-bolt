@@ -104,20 +104,6 @@ BOLT_MAX_UPLOAD_SIZE = FileSize.MB_10
 
 ## ASGI mount settings
 
-## Runtime environment variables
-
-### DJANGO_BOLT_MAX_PARAM_LENGTH
-
-Maximum allowed size for path/query/form parameter values, in bytes. Requests that exceed this limit are rejected with HTTP `422`.
-
-```bash
-export DJANGO_BOLT_MAX_PARAM_LENGTH=65536
-```
-
-**Default:** `8192`
-
-This value is read once at startup (first access) and then cached. Missing, empty, non-integer, or `0` values are ignored and the default is used.
-
 ### BOLT_ASGI_MOUNT_TIMEOUT
 
 Maximum time (seconds) to wait for a mounted ASGI app to complete.
@@ -148,6 +134,20 @@ This setting controls memory usage during file uploads:
 !!! tip "When to adjust"
     - Set higher (e.g., 5-10 MB) if you frequently receive medium-sized files and have sufficient memory
     - Set lower (e.g., 256 KB) on memory-constrained systems or when handling many concurrent uploads
+
+## Runtime environment variables
+
+### DJANGO_BOLT_MAX_PARAM_LENGTH
+
+Maximum allowed size for path/query/form parameter values, in bytes. Requests that exceed this limit are rejected with HTTP `422`.
+
+```bash
+export DJANGO_BOLT_MAX_PARAM_LENGTH=65536
+```
+
+**Default:** `8192`
+
+This value is read once at startup (first access) and then cached. Missing, empty, non-integer, or `0` values are ignored and the default is used.
 
 ## File serving settings
 

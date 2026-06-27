@@ -10,7 +10,6 @@ use pyo3::types::{PyAnyMethods, PyDictMethods};
 use pyo3::{IntoPyObject, Py, PyAny, Python};
 use rust_decimal::Decimal;
 use std::str::FromStr;
-use std::sync::OnceLock;
 use uuid::Uuid;
 
 // OPTIMIZATION: Cache Python classes for type construction (avoids repeated imports)
@@ -75,7 +74,6 @@ fn get_time_class(py: Python<'_>) -> &Py<PyAny> {
 /// Default maximum allowed length for parameter values (8KB).
 /// Prevents memory exhaustion attacks from extremely long parameters.
 pub const DEFAULT_MAX_PARAM_LENGTH: usize = 8192;
-static MAX_PARAM_LENGTH_CACHE: OnceLock<usize> = OnceLock::new();
 
 #[inline]
 fn parse_max_param_length(value: Option<&str>) -> usize {
@@ -85,15 +83,15 @@ fn parse_max_param_length(value: Option<&str>) -> usize {
         .unwrap_or(DEFAULT_MAX_PARAM_LENGTH)
 }
 
-/// Maximum allowed length for parameter values.
-/// Can be overridden with DJANGO_BOLT_MAX_PARAM_LENGTH.
-/// Resolved once and cached for the process lifetime.
-#[inline]
-pub fn max_param_length() -> usize {
-    *MAX_PARAM_LENGTH_CACHE.get_or_init(|| {
-        let env_value = std::env::var("DJANGO_BOLT_MAX_PARAM_LENGTH").ok();
-        parse_max_param_length(env_value.as_deref())
-    })
+/// Resolve the configured maximum parameter length from the
+/// `DJANGO_BOLT_MAX_PARAM_LENGTH` environment variable.
+///
+/// Call this exactly ONCE at server startup and store the result in
+/// `AppState.max_param_length`. The per-request hot path then reads that plain
+/// field — no env access, no lock, no atomics. Missing, empty, non-integer, or
+/// `0` values fall back to [`DEFAULT_MAX_PARAM_LENGTH`].
+pub fn resolve_max_param_length() -> usize {
+    parse_max_param_length(std::env::var("DJANGO_BOLT_MAX_PARAM_LENGTH").ok().as_deref())
 }
 
 /// Type hint constants (must match Python's get_type_hint_id() in compiler.py)
@@ -154,8 +152,17 @@ impl CoercedValue {
 /// * `Ok(CoercedValue)` - Successfully coerced value
 /// * `Err(String)` - Error message describing the coercion failure
 pub fn coerce_param(value: &str, type_hint: u8) -> Result<CoercedValue, String> {
+    coerce_param_with_limit(value, type_hint, DEFAULT_MAX_PARAM_LENGTH)
+}
+
+/// Same as [`coerce_param`] but takes the startup-resolved length limit
+/// (`AppState.max_param_length`) so the hot path never re-resolves config.
+pub(crate) fn coerce_param_with_limit(
+    value: &str,
+    type_hint: u8,
+    max_length: usize,
+) -> Result<CoercedValue, String> {
     // Security: Reject excessively long parameters to prevent memory exhaustion
-    let max_length = max_param_length();
     if value.len() > max_length {
         return Err(format!(
             "Parameter too long: {} bytes (max {} bytes)",
@@ -278,14 +285,16 @@ fn parse_time(value: &str) -> Result<CoercedValue, String> {
 /// Convert a string value to Python object based on type hint.
 /// Handles all supported types including datetime, uuid, and decimal.
 /// Returns PyResult to properly handle validation errors.
+/// `max_length` is the startup-resolved limit (`AppState.max_param_length`),
+/// passed in so the `params_to_py_dict` hot loop never re-resolves config.
 #[inline]
 pub fn coerce_to_py(
     py: pyo3::Python<'_>,
     value: &str,
     type_hint: u8,
+    max_length: usize,
 ) -> pyo3::PyResult<pyo3::Py<pyo3::PyAny>> {
     // Security: Validate length for ALL types (defense in depth)
-    let max_length = max_param_length();
     if value.len() > max_length {
         return Err(pyo3::exceptions::PyValueError::new_err(format!(
             "Parameter too long: {} bytes (max {} bytes)",
@@ -436,11 +445,12 @@ pub fn params_to_py_dict<'py>(
     py: pyo3::Python<'py>,
     params: &ahash::AHashMap<String, String>,
     param_types: &std::collections::HashMap<String, u8>,
+    max_param_length: usize,
 ) -> pyo3::PyResult<pyo3::Bound<'py, pyo3::types::PyDict>> {
     let dict = pyo3::types::PyDict::new(py);
     for (name, value) in params {
         let type_hint = param_types.get(name).copied().unwrap_or(TYPE_STRING);
-        let py_value = coerce_to_py(py, value, type_hint)?;
+        let py_value = coerce_to_py(py, value, type_hint, max_param_length)?;
         let _ = dict.set_item(name, py_value);
     }
     Ok(dict)
@@ -567,7 +577,7 @@ mod tests {
 
     #[test]
     fn test_param_length_limit() {
-        let max_length = max_param_length();
+        let max_length = DEFAULT_MAX_PARAM_LENGTH;
         // Valid length should work
         let valid = "a".repeat(max_length);
         assert!(coerce_param(&valid, TYPE_STRING).is_ok());

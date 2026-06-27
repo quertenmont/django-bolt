@@ -8,7 +8,7 @@ use ahash::AHashMap;
 use std::collections::HashMap;
 
 use crate::responses;
-use crate::type_coercion::{coerce_param, max_param_length, CoercedValue, TYPE_STRING};
+use crate::type_coercion::{coerce_param_with_limit, CoercedValue, TYPE_STRING};
 
 /// Validate and pre-coerce path/query parameters against type hints.
 ///
@@ -18,6 +18,7 @@ pub fn validate_and_cache_typed_params(
     path_params: Option<&AHashMap<String, String>>,
     query_params: Option<&AHashMap<String, String>>,
     param_types: &HashMap<String, u8>,
+    max_length: usize,
 ) -> Result<
     (
         Option<AHashMap<String, CoercedValue>>,
@@ -27,7 +28,6 @@ pub fn validate_and_cache_typed_params(
 > {
     let mut path_coerced: Option<AHashMap<String, CoercedValue>> = None;
     let mut query_coerced: Option<AHashMap<String, CoercedValue>> = None;
-    let max_length = max_param_length();
 
     // Validate path parameters - always check length, type validation for non-strings
     if let Some(path_params) = path_params {
@@ -45,7 +45,7 @@ pub fn validate_and_cache_typed_params(
             // Type validation for non-string types
             if let Some(&type_hint) = param_types.get(name) {
                 if type_hint != TYPE_STRING {
-                    match coerce_param(value, type_hint) {
+                    match coerce_param_with_limit(value, type_hint, max_length) {
                         Ok(coerced) => {
                             path_coerced
                                 .get_or_insert_with(AHashMap::new)
@@ -79,7 +79,7 @@ pub fn validate_and_cache_typed_params(
             // Type validation for non-string types
             if let Some(&type_hint) = param_types.get(name) {
                 if type_hint != TYPE_STRING {
-                    match coerce_param(value, type_hint) {
+                    match coerce_param_with_limit(value, type_hint, max_length) {
                         Ok(coerced) => {
                             query_coerced
                                 .get_or_insert_with(AHashMap::new)

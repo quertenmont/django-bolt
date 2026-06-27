@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-use crate::type_coercion::{coerce_param, CoercedValue, TYPE_STRING};
+use crate::type_coercion::{coerce_param_with_limit, CoercedValue, TYPE_STRING};
 
 /// Memory limit for in-memory file storage (1MB default)
 pub const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024;
@@ -210,13 +210,14 @@ pub struct FormParseResult {
 ///
 /// ```
 /// use std::collections::HashMap;
-/// let result = parse_urlencoded(b"name=alice&age=30", &HashMap::new()).unwrap();
+/// let result = parse_urlencoded(b"name=alice&age=30", &HashMap::new(), 8192).unwrap();
 /// assert!(matches!(result.get("name").unwrap(), FormValue::Single(_)));
 /// assert!(matches!(result.get("age").unwrap(), FormValue::Single(_)));
 /// ```
 pub fn parse_urlencoded(
     body: &[u8],
     type_hints: &HashMap<String, u8>,
+    max_param_length: usize,
 ) -> Result<HashMap<String, FormValue>, ValidationError> {
     let mut result: HashMap<String, FormValue> = HashMap::new();
 
@@ -230,7 +231,7 @@ pub fn parse_urlencoded(
 
     for (key, value) in parsed {
         let type_hint = type_hints.get(&key).copied().unwrap_or(TYPE_STRING);
-        let coerced = coerce_param(&value, type_hint).map_err(|e| {
+        let coerced = coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
             ValidationError::type_coercion_error(&key, type_hint_name(type_hint), &e)
         })?;
 
@@ -276,6 +277,7 @@ pub fn parse_urlencoded(
 ///         /* max_upload_size */ 10 * 1024 * 1024,
 ///         /* memory_limit */ 1024 * 1024,
 ///         /* max_parts */ 1000,
+///         /* max_param_length */ 8192,
 ///     ).await;
 ///
 ///     match result {
@@ -295,6 +297,7 @@ pub async fn parse_multipart(
     max_upload_size: usize,
     memory_limit: usize,
     max_parts: usize,
+    max_param_length: usize,
 ) -> Result<FormParseResult, ValidationError> {
     let mut form_map: HashMap<String, FormValue> = HashMap::new();
     let mut files_map: HashMap<String, Vec<FileInfo>> = HashMap::new();
@@ -389,9 +392,14 @@ pub async fn parse_multipart(
 
             // Type coercion
             let type_hint = type_hints.get(&field_name).copied().unwrap_or(TYPE_STRING);
-            let coerced = coerce_param(&value, type_hint).map_err(|e| {
-                ValidationError::type_coercion_error(&field_name, type_hint_name(type_hint), &e)
-            })?;
+            let coerced =
+                coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
+                    ValidationError::type_coercion_error(
+                        &field_name,
+                        type_hint_name(type_hint),
+                        &e,
+                    )
+                })?;
 
             // Preserve duplicate keys (e.g. multi-select) as FormValue::Multi.
             // First occurrence is Single — zero extra alloc for the common case.
@@ -605,7 +613,9 @@ mod tests {
         type_hints.insert("age".to_string(), crate::type_coercion::TYPE_INT);
         type_hints.insert("active".to_string(), crate::type_coercion::TYPE_BOOL);
 
-        let result = parse_urlencoded(&body, &type_hints).unwrap();
+        let result =
+            parse_urlencoded(&body, &type_hints, crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH)
+                .unwrap();
 
         assert!(matches!(
             result.get("name"),
@@ -630,7 +640,7 @@ mod tests {
     /// let body = Bytes::from("tag=a&tag=b&tag=c&name=John");
     /// let type_hints = HashMap::new();
     ///
-    /// let result = parse_urlencoded(&body, &type_hints).unwrap();
+    /// let result = parse_urlencoded(&body, &type_hints, 8192).unwrap();
     ///
     /// match result.get("tag") {
     ///     Some(FormValue::Multi(v)) => {
@@ -654,7 +664,9 @@ mod tests {
         let body = Bytes::from("tag=a&tag=b&tag=c&name=John");
         let type_hints = HashMap::new();
 
-        let result = parse_urlencoded(&body, &type_hints).unwrap();
+        let result =
+            parse_urlencoded(&body, &type_hints, crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH)
+                .unwrap();
 
         match result.get("tag") {
             Some(FormValue::Multi(v)) => {
