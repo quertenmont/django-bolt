@@ -143,7 +143,9 @@ class TestParameterLengthLimits:
 
     Security measure: max param length is configurable via DJANGO_BOLT_MAX_PARAM_LENGTH
     (default: 8192 bytes) in src/type_coercion.rs
-    Note: Length limit is enforced during type coercion, so only typed params are checked.
+    Note: The length limit is applied to all path/query parameters in the request
+    pipeline (typed and plain-string alike), not only to params that go through
+    type coercion.
     """
 
     def test_typed_path_param_at_limit_succeeds(self, client):

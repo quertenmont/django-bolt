@@ -75,11 +75,18 @@ fn get_time_class(py: Python<'_>) -> &Py<PyAny> {
 /// Prevents memory exhaustion attacks from extremely long parameters.
 pub const DEFAULT_MAX_PARAM_LENGTH: usize = 8192;
 
+/// Hard upper bound for the configurable parameter length (1MB).
+/// A misconfigured `DJANGO_BOLT_MAX_PARAM_LENGTH` (e.g. an enormous value) must
+/// not be able to nullify the DoS guardrail, so any configured value is clamped
+/// to this cap.
+pub const MAX_ALLOWED_PARAM_LENGTH: usize = 1024 * 1024;
+
 #[inline]
 fn parse_max_param_length(value: Option<&str>) -> usize {
     value
         .and_then(|raw| raw.parse::<usize>().ok())
         .filter(|parsed| *parsed > 0)
+        .map(|parsed| parsed.min(MAX_ALLOWED_PARAM_LENGTH))
         .unwrap_or(DEFAULT_MAX_PARAM_LENGTH)
 }
 
@@ -639,5 +646,20 @@ mod tests {
     #[test]
     fn test_parse_max_param_length_accepts_valid_positive_value() {
         assert_eq!(parse_max_param_length(Some("16384")), 16384);
+    }
+
+    #[test]
+    fn test_parse_max_param_length_clamps_to_upper_bound() {
+        // A misconfigured oversized value must be clamped to the hard cap so it
+        // cannot nullify the DoS guardrail.
+        assert_eq!(
+            parse_max_param_length(Some("999999999999")),
+            MAX_ALLOWED_PARAM_LENGTH
+        );
+        // The cap itself is accepted as-is.
+        assert_eq!(
+            parse_max_param_length(Some(&MAX_ALLOWED_PARAM_LENGTH.to_string())),
+            MAX_ALLOWED_PARAM_LENGTH
+        );
     }
 }
