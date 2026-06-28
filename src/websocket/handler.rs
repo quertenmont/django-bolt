@@ -18,7 +18,7 @@ use crate::handler::coerced_value_to_py;
 use crate::metadata::CorsConfig;
 use crate::middleware::rate_limit::check_rate_limit;
 use crate::state::{AppState, ROUTE_METADATA, TASK_LOCALS};
-use crate::type_coercion::{coerce_param_with_limit, TYPE_STRING};
+use crate::type_coercion::{coerce_param_with_limit, CoerceError, TYPE_STRING};
 use crate::validation::{validate_auth_and_guards, AuthGuardResult};
 
 use super::actor::WebSocketActor;
@@ -109,8 +109,12 @@ fn build_scope(
                         let py_value = coerced_value_to_py(py, &coerced);
                         query_dict.set_item(decoded_key.as_ref(), py_value)?;
                     }
-                    Err(_) => {
-                        // Fall back to string on coercion error
+                    // Oversized values reject the upgrade — never pass a raw string through.
+                    Err(e @ CoerceError::TooLong { .. }) => {
+                        return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+                    }
+                    // Genuine type-coercion failure: fall back to the raw string.
+                    Err(CoerceError::Invalid(_)) => {
                         query_dict.set_item(decoded_key.as_ref(), decoded_value.as_ref())?;
                     }
                 }
@@ -141,8 +145,12 @@ fn build_scope(
                 let py_value = coerced_value_to_py(py, &coerced);
                 params_dict.set_item(k.as_str(), py_value)?;
             }
-            Err(_) => {
-                // Fall back to string on coercion error
+            // Oversized values reject the upgrade — never pass a raw string through.
+            Err(e @ CoerceError::TooLong { .. }) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+            }
+            // Genuine type-coercion failure: fall back to the raw string.
+            Err(CoerceError::Invalid(_)) => {
                 params_dict.set_item(k.as_str(), v.as_str())?;
             }
         }

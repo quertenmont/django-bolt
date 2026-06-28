@@ -45,7 +45,7 @@ use crate::handler::{
 };
 use crate::request_pipeline::validate_and_cache_typed_params;
 use crate::static_files::handle_file;
-use crate::type_coercion::{coerce_param_with_limit, params_to_py_dict, TYPE_STRING};
+use crate::type_coercion::{coerce_param_with_limit, params_to_py_dict, CoerceError, TYPE_STRING};
 
 static ASYNC_RUNTIME_INITIALIZED: std::sync::Once = std::sync::Once::new();
 
@@ -1287,7 +1287,12 @@ pub fn handle_test_websocket(
                 let py_value = coerced_value_to_py(py, &coerced);
                 path_params_dict.set_item(k, py_value)?;
             }
-            Err(_) => {
+            // Oversized values are a hard error — never fall back to the raw string.
+            Err(e @ CoerceError::TooLong { .. }) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+            }
+            // Genuine type-coercion failure: fall back to the raw string.
+            Err(CoerceError::Invalid(_)) => {
                 path_params_dict.set_item(k, v)?;
             }
         }
@@ -1317,7 +1322,12 @@ pub fn handle_test_websocket(
                             let py_value = coerced_value_to_py(py, &coerced);
                             query_dict.set_item(decoded_key.as_ref(), py_value)?;
                         }
-                        Err(_) => {
+                        // Oversized values are a hard error — never fall back to raw string.
+                        Err(e @ CoerceError::TooLong { .. }) => {
+                            return Err(pyo3::exceptions::PyValueError::new_err(e.to_string()));
+                        }
+                        // Genuine type-coercion failure: fall back to the raw string.
+                        Err(CoerceError::Invalid(_)) => {
                             query_dict.set_item(decoded_key.as_ref(), decoded_value.as_ref())?;
                         }
                     }

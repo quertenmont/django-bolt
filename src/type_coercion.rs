@@ -142,6 +142,36 @@ impl CoercedValue {
     }
 }
 
+/// Error returned by [`coerce_param`] / [`coerce_param_with_limit`].
+///
+/// Callers distinguish the two variants structurally:
+/// * [`CoerceError::TooLong`] is a hard security limit — it MUST always be
+///   rejected (422 for HTTP, upgrade rejection for WebSockets). Never fall back
+///   to passing the oversized value through.
+/// * [`CoerceError::Invalid`] is a normal type-coercion failure. Some callers
+///   (WebSocket scope building) intentionally fall back to the raw string here.
+///
+/// `Display` reproduces the exact same messages the old `String` errors used,
+/// so existing `format!("{e}")` / `.to_string()` consumers are unchanged.
+#[derive(Debug, Clone)]
+pub enum CoerceError {
+    /// Value exceeded the configured `max_param_length` (in bytes).
+    TooLong { len: usize, max: usize },
+    /// Value could not be parsed into the requested type.
+    Invalid(String),
+}
+
+impl std::fmt::Display for CoerceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CoerceError::TooLong { len, max } => {
+                write!(f, "Parameter too long: {} bytes (max {} bytes)", len, max)
+            }
+            CoerceError::Invalid(msg) => f.write_str(msg),
+        }
+    }
+}
+
 /// Coerce a string value to the specified type
 ///
 /// # Arguments
@@ -150,8 +180,8 @@ impl CoercedValue {
 ///
 /// # Returns
 /// * `Ok(CoercedValue)` - Successfully coerced value
-/// * `Err(String)` - Error message describing the coercion failure
-pub fn coerce_param(value: &str, type_hint: u8) -> Result<CoercedValue, String> {
+/// * `Err(CoerceError)` - Structured error (`TooLong` vs `Invalid`)
+pub fn coerce_param(value: &str, type_hint: u8) -> Result<CoercedValue, CoerceError> {
     coerce_param_with_limit(value, type_hint, DEFAULT_MAX_PARAM_LENGTH)
 }
 
@@ -161,16 +191,23 @@ pub(crate) fn coerce_param_with_limit(
     value: &str,
     type_hint: u8,
     max_length: usize,
-) -> Result<CoercedValue, String> {
-    // Security: Reject excessively long parameters to prevent memory exhaustion
+) -> Result<CoercedValue, CoerceError> {
+    // Security: Reject excessively long parameters to prevent memory exhaustion.
+    // Surfaced as a distinct variant so callers can enforce it as a hard limit
+    // without inspecting the error message text.
     if value.len() > max_length {
-        return Err(format!(
-            "Parameter too long: {} bytes (max {} bytes)",
-            value.len(),
-            max_length
-        ));
+        return Err(CoerceError::TooLong {
+            len: value.len(),
+            max: max_length,
+        });
     }
 
+    coerce_typed(value, type_hint).map_err(CoerceError::Invalid)
+}
+
+/// Parse `value` into `type_hint` without the length check. Plain-message errors
+/// are wrapped in [`CoerceError::Invalid`] by the public entry points above.
+fn coerce_typed(value: &str, type_hint: u8) -> Result<CoercedValue, String> {
     match type_hint {
         TYPE_INT => value
             .parse::<i64>()
@@ -585,8 +622,7 @@ mod tests {
         // Exceeding limit should fail
         let too_long = "a".repeat(max_length + 1);
         let result = coerce_param(&too_long, TYPE_STRING);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Parameter too long"));
+        assert!(matches!(result, Err(CoerceError::TooLong { .. })));
     }
 
     #[test]

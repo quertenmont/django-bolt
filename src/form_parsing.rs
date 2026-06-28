@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use tempfile::NamedTempFile;
 
-use crate::type_coercion::{coerce_param_with_limit, CoercedValue, TYPE_STRING};
+use crate::type_coercion::{coerce_param_with_limit, CoerceError, CoercedValue, TYPE_STRING};
 
 /// Memory limit for in-memory file storage (1MB default)
 pub const DEFAULT_MEMORY_LIMIT: usize = 1024 * 1024;
@@ -232,7 +232,7 @@ pub fn parse_urlencoded(
     for (key, value) in parsed {
         let type_hint = type_hints.get(&key).copied().unwrap_or(TYPE_STRING);
         let coerced = coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
-            ValidationError::type_coercion_error(&key, type_hint_name(type_hint), &e)
+            ValidationError::type_coercion_error(&key, type_hint_name(type_hint), &e.to_string())
         })?;
 
         match result.entry(key) {
@@ -377,6 +377,7 @@ pub async fn parse_multipart(
             }
         } else {
             // Regular form field
+            let type_hint = type_hints.get(&field_name).copied().unwrap_or(TYPE_STRING);
             let mut value_bytes = Vec::new();
             while let Some(chunk) = field.next().await {
                 let data = chunk.map_err(|e| ValidationError {
@@ -385,19 +386,31 @@ pub async fn parse_multipart(
                     msg: format!("Failed to read field data: {}", e),
                     ctx: HashMap::new(),
                 })?;
+                // Security: enforce the length limit incrementally so an oversized
+                // field is rejected before the entire body is buffered into memory.
+                if value_bytes.len() + data.len() > max_param_length {
+                    return Err(ValidationError::type_coercion_error(
+                        &field_name,
+                        type_hint_name(type_hint),
+                        &CoerceError::TooLong {
+                            len: value_bytes.len() + data.len(),
+                            max: max_param_length,
+                        }
+                        .to_string(),
+                    ));
+                }
                 value_bytes.extend_from_slice(&data);
             }
 
             let value = String::from_utf8_lossy(&value_bytes).to_string();
 
             // Type coercion
-            let type_hint = type_hints.get(&field_name).copied().unwrap_or(TYPE_STRING);
             let coerced =
                 coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
                     ValidationError::type_coercion_error(
                         &field_name,
                         type_hint_name(type_hint),
-                        &e,
+                        &e.to_string(),
                     )
                 })?;
 
@@ -694,5 +707,130 @@ mod tests {
         assert_eq!(json["loc"], serde_json::json!(["body", "avatar"]));
         assert_eq!(json["ctx"]["max_size"], 1024);
         assert_eq!(json["ctx"]["actual_size"], 2048);
+    }
+
+    /// A stream of pre-built byte chunks that records how many chunks were
+    /// actually polled, and applies backpressure by returning `Pending` after
+    /// each chunk.
+    ///
+    /// The backpressure is essential: actix-multipart's internal `PayloadBuffer`
+    /// greedily drains the underlying stream until it sees `Pending` (or EOF).
+    /// An always-ready stream would therefore be fully buffered up-front, hiding
+    /// whether *our* loop aborted early. Yielding one chunk then `Pending` (with
+    /// an immediate self-wake so the task is re-polled) makes the parser pull
+    /// chunks strictly on demand, so the counter reflects what our loop consumed.
+    struct CountingStream {
+        chunks: std::collections::VecDeque<Bytes>,
+        consumed: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        yield_pending: bool,
+    }
+
+    impl futures_util::Stream for CountingStream {
+        type Item = Result<Bytes, actix_web::error::PayloadError>;
+
+        fn poll_next(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Self::Item>> {
+            let this = self.get_mut();
+            if this.yield_pending {
+                // Force actix-multipart to stop buffering ahead after one chunk.
+                this.yield_pending = false;
+                cx.waker().wake_by_ref();
+                return std::task::Poll::Pending;
+            }
+            match this.chunks.pop_front() {
+                Some(chunk) => {
+                    this.consumed
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    this.yield_pending = true;
+                    std::task::Poll::Ready(Some(Ok(chunk)))
+                }
+                None => std::task::Poll::Ready(None),
+            }
+        }
+    }
+
+    /// The multipart text-field reader must enforce `max_param_length`
+    /// *incrementally* — an oversized field is rejected before its entire body
+    /// is buffered into memory. We feed the field as many small chunks and
+    /// assert the parser stops consuming the stream long before draining all of
+    /// them. A post-buffer implementation would drain every chunk first, so this
+    /// test fails for that (vulnerable) behavior.
+    #[test]
+    fn test_multipart_rejects_oversized_field_before_buffering() {
+        use actix_web::http::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let boundary = "TESTBOUNDARY";
+        let chunk_size = 1000usize;
+        let n_data_chunks = 200usize;
+        let max_param_length = 1000usize;
+
+        let header = format!(
+            "--{b}\r\nContent-Disposition: form-data; name=\"value\"\r\n\r\n",
+            b = boundary
+        );
+        let closing = format!("\r\n--{b}--\r\n", b = boundary);
+
+        let mut chunks: VecDeque<Bytes> = VecDeque::new();
+        chunks.push_back(Bytes::from(header));
+        for _ in 0..n_data_chunks {
+            chunks.push_back(Bytes::from(vec![b'a'; chunk_size]));
+        }
+        chunks.push_back(Bytes::from(closing));
+        let total_chunks = chunks.len();
+
+        let consumed = Arc::new(AtomicUsize::new(0));
+        let stream = CountingStream {
+            chunks,
+            consumed: Arc::clone(&consumed),
+            yield_pending: false,
+        };
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("multipart/form-data; boundary=TESTBOUNDARY"),
+        );
+
+        let multipart = Multipart::new(&headers, stream);
+        let type_hints: HashMap<String, u8> = HashMap::new();
+        let file_constraints: HashMap<String, FileFieldConstraints> = HashMap::new();
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(parse_multipart(
+            multipart,
+            &type_hints,
+            &file_constraints,
+            10 * 1024 * 1024,
+            DEFAULT_MEMORY_LIMIT,
+            DEFAULT_MAX_PARTS,
+            max_param_length,
+        ));
+
+        // The oversized field is rejected as "too long".
+        let err = match result {
+            Ok(_) => panic!("oversized field should be rejected"),
+            Err(e) => e,
+        };
+        assert!(
+            err.msg.contains("Parameter too long"),
+            "unexpected error message: {}",
+            err.msg
+        );
+
+        // Crucially: it aborted *before* draining the whole field — far fewer
+        // chunks consumed than were provided.
+        let consumed_chunks = consumed.load(Ordering::SeqCst);
+        assert!(
+            consumed_chunks < total_chunks,
+            "parser drained {consumed_chunks} of {total_chunks} chunks — it buffered the whole field instead of aborting early"
+        );
     }
 }
