@@ -1039,7 +1039,12 @@ async fn handle_test_request_internal(
             None => None,
         };
         let cookies_dict = if needs_cookies {
-            Some(params_to_py_dict(py, &cookies, &param_types, max_param_length)?)
+            Some(params_to_py_dict(
+                py,
+                &cookies,
+                &param_types,
+                max_param_length,
+            )?)
         } else {
             None
         };

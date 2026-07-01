@@ -231,9 +231,14 @@ pub fn parse_urlencoded(
 
     for (key, value) in parsed {
         let type_hint = type_hints.get(&key).copied().unwrap_or(TYPE_STRING);
-        let coerced = coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
-            ValidationError::type_coercion_error(&key, type_hint_name(type_hint), &e.to_string())
-        })?;
+        let coerced =
+            coerce_param_with_limit(&value, type_hint, max_param_length).map_err(|e| {
+                ValidationError::type_coercion_error(
+                    &key,
+                    type_hint_name(type_hint),
+                    &e.to_string(),
+                )
+            })?;
 
         match result.entry(key) {
             std::collections::hash_map::Entry::Vacant(e) => {
@@ -626,9 +631,12 @@ mod tests {
         type_hints.insert("age".to_string(), crate::type_coercion::TYPE_INT);
         type_hints.insert("active".to_string(), crate::type_coercion::TYPE_BOOL);
 
-        let result =
-            parse_urlencoded(&body, &type_hints, crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH)
-                .unwrap();
+        let result = parse_urlencoded(
+            &body,
+            &type_hints,
+            crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH,
+        )
+        .unwrap();
 
         assert!(matches!(
             result.get("name"),
@@ -677,9 +685,12 @@ mod tests {
         let body = Bytes::from("tag=a&tag=b&tag=c&name=John");
         let type_hints = HashMap::new();
 
-        let result =
-            parse_urlencoded(&body, &type_hints, crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH)
-                .unwrap();
+        let result = parse_urlencoded(
+            &body,
+            &type_hints,
+            crate::type_coercion::DEFAULT_MAX_PARAM_LENGTH,
+        )
+        .unwrap();
 
         match result.get("tag") {
             Some(FormValue::Multi(v)) => {

@@ -98,7 +98,11 @@ fn parse_max_param_length(value: Option<&str>) -> usize {
 /// field — no env access, no lock, no atomics. Missing, empty, non-integer, or
 /// `0` values fall back to [`DEFAULT_MAX_PARAM_LENGTH`].
 pub fn resolve_max_param_length() -> usize {
-    parse_max_param_length(std::env::var("DJANGO_BOLT_MAX_PARAM_LENGTH").ok().as_deref())
+    parse_max_param_length(
+        std::env::var("DJANGO_BOLT_MAX_PARAM_LENGTH")
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// Type hint constants (must match Python's get_type_hint_id() in compiler.py)
