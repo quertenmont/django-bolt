@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from .helpers import ServerProject
+
 pytestmark = pytest.mark.server_integration
 
 
-def _make_project(make_server_project):
+def _make_project(make_server_project) -> ServerProject:
     """Project exposing every parameter surface the limit is enforced on:
     HTTP path, HTTP query, urlencoded form and multipart form."""
     return make_server_project(

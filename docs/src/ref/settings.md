@@ -147,6 +147,8 @@ export DJANGO_BOLT_MAX_PARAM_LENGTH=65536
 
 **Default:** `8192`
 
+**Maximum:** `1048576` (1 MB). Values above this are clamped down to the maximum so a misconfiguration can never effectively disable the limit.
+
 This value is read once at startup (first access) and then cached. Missing, empty, non-integer, or `0` values are ignored and the default is used.
 
 ## File serving settings
@@ -400,4 +402,4 @@ api = BoltAPI(
 | `SECURE_CSP` | `dict` | `None` | CSP directives for static files ([Django 6.0+](https://docs.djangoproject.com/en/6.0/ref/csp/)) |
 | `BOLT_AUTHENTICATION_CLASSES` | `list` | `[]` | Default authentication backends |
 | `BOLT_DEFAULT_PERMISSION_CLASSES` | `list` | `[AllowAny()]` | Default permission guards |
-| `DJANGO_BOLT_MAX_PARAM_LENGTH` | `int` (env var) | `8192` | Max path/query/form parameter size in bytes (requests over the limit return `422`) |
+| `DJANGO_BOLT_MAX_PARAM_LENGTH` | `int` (env var) | `8192` | Max path/query/form parameter size in bytes, clamped to `1048576` (1 MB); requests over the limit return `422` |

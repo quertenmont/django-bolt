@@ -172,7 +172,7 @@ async def test_websocket_oversized_query_param_rejected():
 
     oversized = "a" * 9000  # exceeds the default 8192-byte limit
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match=r"Parameter too long"):
         async with WebSocketTestClient(
             api,
             "/ws/echo",
@@ -181,8 +181,6 @@ async def test_websocket_oversized_query_param_rejected():
             read_django_settings=False,
         ):
             pass
-
-    assert "Parameter too long" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
@@ -197,7 +195,7 @@ async def test_websocket_oversized_path_param_rejected():
 
     oversized = "a" * 9000  # exceeds the default 8192-byte limit
 
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(ValueError, match=r"Parameter too long"):
         async with WebSocketTestClient(
             api,
             f"/ws/{oversized}",
@@ -205,8 +203,6 @@ async def test_websocket_oversized_path_param_rejected():
             read_django_settings=False,
         ):
             pass
-
-    assert "Parameter too long" in str(exc_info.value)
 
 
 # --- Rate Limiting Tests ---
